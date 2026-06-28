@@ -22,6 +22,16 @@ on:
           - fox_14.1
           - auto-dfe
 
+      aosp_mirror:
+        description: "Select AOSP Mirror (to bypass Google HTTP 429 Rate Limits)"
+        required: true
+        type: choice
+        default: tuna
+        options:
+          - tuna
+          - ustc
+          - none
+
 jobs:
   build:
     if: github.event.repository.owner.id == github.event.sender.id
@@ -78,6 +88,18 @@ jobs:
       with:
         distribution: 'zulu'
         java-version: '11'
+
+    - name: Configure AOSP Mirror
+      run: |
+        if [ "${{ inputs.aosp_mirror }}" = "tuna" ]; then
+          git config --global url."https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/".insteadOf "https://android.googlesource.com/"
+          echo "Configured Tsinghua TUNA Mirror for AOSP"
+        elif [ "${{ inputs.aosp_mirror }}" = "ustc" ]; then
+          git config --global url."https://mirrors.ustc.edu.cn/aosp/".insteadOf "https://android.googlesource.com/"
+          echo "Configured USTC Mirror for AOSP"
+        else
+          echo "Using default Google AOSP servers"
+        fi
 
     - name: Sync OrangeFox sources and minimal manifest
       run: |
