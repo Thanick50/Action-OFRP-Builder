@@ -7,11 +7,11 @@ on:
         description: "Select device tree repository"
         required: true
         type: choice
-        default: https://github.com/AzzyC/ofox_device_xiaomi_peridot
+        default: https://github.com/Thanick50/ofox_device_xiaomi_uke
         options:
+          - https://github.com/Thanick50/ofox_device_xiaomi_uke
           - https://github.com/AzzyC/ofox_device_xiaomi_peridot
           - https://gitlab.com/OrangeFox/device/peridot_new
-          - https://github.com/Thanick50/ofox_device_xiaomi_uke
 
       device_tree_branch:
         description: "Select device tree branch"
@@ -38,9 +38,9 @@ jobs:
       MANIFEST_BRANCH: 14.1
       DEVICE_TREE_URL: ${{ inputs.device_tree_url }}
       DEVICE_TREE_BRANCH: ${{ inputs.device_tree_branch }}
-      DEVICE_PATH: device/xiaomi/peridot
-      DEVICE_NAME: peridot
-      MAKEFILE_NAME: twrp_peridot-ap2a-eng
+      DEVICE_PATH: device/xiaomi/uke
+      DEVICE_NAME: uke
+      MAKEFILE_NAME: twrp_uke-ap2a-eng
       BUILD_TARGET: recovery
 
       # Maximise workflow / instance to GitHub's 6 hour limit
@@ -63,9 +63,10 @@ jobs:
 
     - name: Prepare the build environment
       run: |
-        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            linux-modules-extra-$(uname -r) \
-            git python3 tar aria2
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            sudo curl git python3 tar aria2 \
+            linux-modules-extra-$(uname -r)
         curl -L -O "https://gitlab.com/OrangeFox/misc/scripts/-/raw/master/setup/android_build_env.sh"
         sudo bash android_build_env.sh
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
