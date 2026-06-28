@@ -56,7 +56,8 @@ jobs:
 
     - name: Initialize workspace
       run: |
-        mkdir workspace
+        rm -rf workspace
+        mkdir -p workspace
         cd workspace
         echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
       id: pwd
