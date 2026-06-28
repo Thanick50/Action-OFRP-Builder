@@ -115,6 +115,12 @@ jobs:
       if: ${{ inputs.sync_sources }}
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}
+        # Reset AOSP repos to clean state if they exist
+        if [ -d "fox_${{ env.MANIFEST_BRANCH }}/.repo" ]; then
+          cd "fox_${{ env.MANIFEST_BRANCH }}"
+          repo forall -c "git reset --hard HEAD && git clean -fd"
+          cd ..
+        fi
         # Clean up directories replaced by custom git clones to prevent "unsupported checkout state" errors
         rm -rf "fox_${{ env.MANIFEST_BRANCH }}/bootable/recovery"
         rm -rf "fox_${{ env.MANIFEST_BRANCH }}/external/se_omapi"
