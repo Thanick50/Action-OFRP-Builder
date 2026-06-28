@@ -115,6 +115,11 @@ jobs:
       if: ${{ inputs.sync_sources }}
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}
+        # Clean up directories replaced by custom git clones to prevent "unsupported checkout state" errors
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/bootable/recovery"
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/external/se_omapi"
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/device/qcom/common"
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/device/qcom/twrp-common"
         rm -rf sync
         git clone --depth=1 ${{ env.SYNC_URL }}
         cd sync
