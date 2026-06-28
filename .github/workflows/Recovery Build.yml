@@ -11,6 +11,7 @@ on:
         options:
           - https://github.com/AzzyC/ofox_device_xiaomi_peridot
           - https://gitlab.com/OrangeFox/device/peridot_new
+          - https://github.com/Thanick50/ofox_device_xiaomi_uke
 
       device_tree_branch:
         description: "Select device tree branch"
