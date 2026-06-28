@@ -43,6 +43,10 @@ jobs:
       image: ubuntu:24.04
       options: --privileged
 
+    defaults:
+      run:
+        shell: bash
+
     env:
       SYNC_URL: https://gitlab.com/OrangeFox/sync.git
       MANIFEST_BRANCH: 14.1
