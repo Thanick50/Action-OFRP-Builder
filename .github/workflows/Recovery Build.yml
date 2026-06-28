@@ -32,6 +32,12 @@ on:
           - ustc
           - none
 
+      sync_sources:
+        description: "Sync OrangeFox/AOSP sources (uncheck to skip sync and use existing workspace)"
+        required: true
+        type: boolean
+        default: true
+
 jobs:
   build:
     if: github.event.repository.owner.id == github.event.sender.id
@@ -70,7 +76,6 @@ jobs:
 
     - name: Initialize workspace
       run: |
-        rm -rf workspace
         mkdir -p workspace
         cd workspace
         echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
@@ -94,6 +99,7 @@ jobs:
         java-version: '11'
 
     - name: Configure AOSP Mirror
+      if: ${{ inputs.sync_sources }}
       run: |
         if [ "${{ inputs.aosp_mirror }}" = "tuna" ]; then
           git config --global url."https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/".insteadOf "https://android.googlesource.com/"
@@ -106,8 +112,10 @@ jobs:
         fi
 
     - name: Sync OrangeFox sources and minimal manifest
+      if: ${{ inputs.sync_sources }}
       run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}
+        rm -rf sync
         git clone --depth=1 ${{ env.SYNC_URL }}
         cd sync
         ./orangefox_sync.sh --branch ${{ env.MANIFEST_BRANCH }} --path ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ env.MANIFEST_BRANCH }}
@@ -170,84 +178,3 @@ jobs:
           Device tree commit: [${{ steps.devtree_commit.outputs.LATEST_COMMIT }}](${{ env.DEVICE_TREE_URL }}/tree/${{ steps.devtree_commit.outputs.LATEST_COMMIT }})
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-
-
-    - name: Watch for device tree changes and dirty build
-      if: success()
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        START_TIME=$(date +%s)
-        BUILD_COUNT=0
-        CURRENT_COMMIT="${{ steps.devtree_commit.outputs.LATEST_COMMIT_FULL }}"
-
-        WORKSPACE="${{ steps.pwd.outputs.workspace-folder }}"
-        FOX_DIR="$WORKSPACE/fox_${{ env.MANIFEST_BRANCH }}"
-        DEVICE_DIR="$FOX_DIR/${{ env.DEVICE_PATH }}"
-        OUT_DIR="$FOX_DIR/out/target/product/${{ env.DEVICE_NAME }}"
-
-        while true; do
-          NOW=$(date +%s)
-          ELAPSED=$((NOW - START_TIME))
-
-          if [ "$ELAPSED" -ge "${{ env.WATCH_UNTIL_SECONDS }}" ]; then
-            break
-          fi
-
-          sleep "${{ env.WATCH_INTERVAL_SECONDS }}"
-
-          NOW=$(date +%s)
-          ELAPSED=$((NOW - START_TIME))
-
-          if [ "$ELAPSED" -ge "${{ env.WATCH_UNTIL_SECONDS }}" ]; then
-            break
-          fi
-
-          cd "$DEVICE_DIR"
-
-          git fetch origin "${{ env.DEVICE_TREE_BRANCH }}"
-
-          NEW_COMMIT=$(git rev-parse "origin/${{ env.DEVICE_TREE_BRANCH }}")
-          NEW_COMMIT_SHORT=$(echo "$NEW_COMMIT" | cut -c1-7)
-          CURRENT_COMMIT_SHORT=$(echo "$CURRENT_COMMIT" | cut -c1-7)
-
-          if [ "$NEW_COMMIT" = "$CURRENT_COMMIT" ]; then
-            echo "No device tree change detected. Current commit: $CURRENT_COMMIT_SHORT"
-            continue
-          fi
-
-          BUILD_COUNT=$((BUILD_COUNT + 1))
-
-          git reset --hard "$NEW_COMMIT"
-          CURRENT_COMMIT="$NEW_COMMIT"
-
-          cd "$FOX_DIR"
-
-          set +e
-          source build/envsetup.sh
-          export ALLOW_MISSING_DEPENDENCIES=true
-          set -e
-
-          lunch ${{ env.MAKEFILE_NAME }}
-
-          if ! mka adbd ${{ env.BUILD_TARGET }}image -j$(nproc --all); then
-            continue
-          fi
-
-          TAG_NAME="${{ github.run_id }}-${BUILD_COUNT}"
-          RELEASE_NAME="${{ env.DEVICE_NAME }}-${TAG_NAME}"
-
-          gh release create "$TAG_NAME" \
-            "$OUT_DIR"/OrangeFox-R*.img \
-            "$OUT_DIR"/OrangeFox-R*.zip \
-            "$OUT_DIR"/OrangeFox-R*.md5 \
-            --repo "${{ github.repository }}" \
-            --title "$RELEASE_NAME" \
-            --notes "Manifest: ${{ env.MANIFEST_BRANCH }}
-          Device: ${{ env.DEVICE_NAME }}
-          Target: ${{ env.BUILD_TARGET }}
-          Dirty build: #${BUILD_COUNT}
-          Device tree commit: ${NEW_COMMIT_SHORT}
-          Device tree URL: ${{ env.DEVICE_TREE_URL }}/tree/${NEW_COMMIT_SHORT}"
-        done
