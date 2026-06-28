@@ -66,8 +66,9 @@ jobs:
       run: |
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -yq \
-            sudo curl git python3 tar aria2 \
-            linux-modules-extra-$(uname -r)
+            sudo curl git python3 tar aria2
+        DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            linux-modules-extra-$(uname -r) || true
         curl -L -O "https://gitlab.com/OrangeFox/misc/scripts/-/raw/master/setup/android_build_env.sh"
         sudo bash android_build_env.sh
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
