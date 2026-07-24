@@ -11,6 +11,7 @@ on:
         options:
           - https://github.com/AzzyC/ofox_device_xiaomi_peridot
           - https://gitlab.com/OrangeFox/device/peridot_new
+          - https://github.com/Thanick50/ofox_device_xiaomi_uke
 
       device_tree_branch:
         description: "Select device tree branch"
@@ -19,14 +20,39 @@ on:
         type: choice
         options:
           - fox_16.0
+          - fox_14.1
+          - auto-dfe
+
+      aosp_mirror:
+        description: "Select AOSP Mirror (to bypass Google HTTP 429 Rate Limits)"
+        required: true
+        type: choice
+        default: tuna
+        options:
+          - tuna
+          - ustc
+          - none
+
+      sync_sources:
+        description: "Sync OrangeFox/AOSP sources (uncheck to skip sync and use existing workspace)"
+        required: true
+        type: boolean
+        default: true
 
 jobs:
   build:
     if: github.event.repository.owner.id == github.event.sender.id
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     timeout-minutes: 360
     permissions:
       contents: write
+    container:
+      image: ubuntu:24.04
+      options: --privileged
+
+    defaults:
+      run:
+        shell: bash
 
     env:
       SYNC_URL: https://github.com/OrangeFox16/sync.git
@@ -48,46 +74,20 @@ jobs:
     - name: Cleanup
       uses: rokibhasansagar/slimhub_actions@main
 
-    # Setup SSH for GitLab
-    - name: Setup SSH Keys
-      uses: webfactory/ssh-agent@v0.9.0
-      with:
-        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
-    - name: Add GitLab to known hosts
-      run: |
-        mkdir -p ~/.ssh
-        ssh-keyscan gitlab.com >> ~/.ssh/known_hosts
-
-    - name: Create Telegram sender script
-      run: |
-        cat <<'EOF' > /tmp/send_msg.sh
-        #!/bin/bash
-        MSG="$(printf "$1")"
-        curl -s --fail \
-          -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-          -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-          -d text="$MSG" \
-          -d parse_mode="Markdown" \
-          -d disable_web_page_preview=true \
-        > /dev/null 2>&1 || true
-        EOF
-        chmod +x /tmp/send_msg.sh
-
     - name: Initialize workspace
       run: |
-        /tmp/send_msg.sh "🚀 *Starting OrangeFox build* for \`${{ env.DEVICE_NAME }}\` (\`${{ env.MANIFEST_BRANCH }}\`)\n🔗 [View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
-        mkdir workspace
+        mkdir -p workspace
         cd workspace
         echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
       id: pwd
 
     - name: Prepare the build environment
       run: |
-        /tmp/send_msg.sh "🧩 Preparing build environment..."
-        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            linux-modules-extra-$(uname -r) \
-            git python3 tar aria2
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            sudo curl git python3 tar aria2 rsync lsb-release
+        DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            linux-modules-extra-$(uname -r) || true
         curl -L -O "https://gitlab.com/OrangeFox/misc/scripts/-/raw/master/setup/android_build_env.sh"
         sudo bash android_build_env.sh
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
@@ -98,39 +98,44 @@ jobs:
         distribution: 'zulu'
         java-version: '11'
 
-    - name: Sync OrangeFox sources and minimal manifest
+    - name: Configure AOSP Mirror
+      if: ${{ inputs.sync_sources }}
       run: |
-        /tmp/send_msg.sh "🌐 Syncing OrangeFox sources..."
+        if [ "${{ inputs.aosp_mirror }}" = "tuna" ]; then
+          git config --global url."https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/".insteadOf "https://android.googlesource.com/"
+          echo "Configured Tsinghua TUNA Mirror for AOSP"
+        elif [ "${{ inputs.aosp_mirror }}" = "ustc" ]; then
+          git config --global url."https://mirrors.ustc.edu.cn/aosp/".insteadOf "https://android.googlesource.com/"
+          echo "Configured USTC Mirror for AOSP"
+        else
+          echo "Using default Google AOSP servers"
+        fi
+
+    - name: Sync OrangeFox sources and minimal manifest
+      if: ${{ inputs.sync_sources }}
+      run: |
         cd ${{ steps.pwd.outputs.workspace-folder }}
+        # Reset AOSP repos to clean state if they exist
+        if [ -d "fox_${{ env.MANIFEST_BRANCH }}/.repo" ]; then
+          cd "fox_${{ env.MANIFEST_BRANCH }}"
+          repo forall -c "git reset --hard HEAD && git clean -fd"
+          cd ..
+        fi
+        # Clean up directories replaced by custom git clones to prevent "unsupported checkout state" errors
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/bootable/recovery"
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/external/se_omapi"
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/device/qcom/common"
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/device/qcom/twrp-common"
+        rm -rf sync
         git clone --depth=1 ${{ env.SYNC_URL }}
         cd sync
         ./orangefox_sync.sh --branch ${{ env.MANIFEST_BRANCH }} --path ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ env.MANIFEST_BRANCH }}
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    - name: Replace bootable/recovery with Testing/Recovery
-      run: |
-        /tmp/send_msg.sh "🔁 Replacing bootable/recovery..."
-
-        cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ env.MANIFEST_BRANCH }}
-
-        rm -rf bootable/recovery
-
-        git clone --depth=1 -b fox_16.0-R12-wlan-test \
-          git@gitlab.com:OrangeFox/Testing/Recovery.git \
-          bootable/recovery
-
-        rm -rf vendor/recovery
-
-        git clone --depth=1 -b fox_16.0-R12 \
-          git@gitlab.com:OrangeFox/vendor/recovery.git \
-          vendor/recovery
-
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
     - name: Clone device tree
       run: |
-        /tmp/send_msg.sh "🌲 Cloning device tree for \`${{ env.DEVICE_NAME }}\`..."
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ env.MANIFEST_BRANCH }}
+        rm -rf ./${{ env.DEVICE_PATH }}
         git clone --depth=1 ${{ env.DEVICE_TREE_URL }} -b ${{ env.DEVICE_TREE_BRANCH }} ./${{ env.DEVICE_PATH }}
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
@@ -143,7 +148,6 @@ jobs:
         echo "LATEST_COMMIT=$LATEST_COMMIT" >> $GITHUB_OUTPUT
         echo "LATEST_COMMIT_FULL=$LATEST_COMMIT_FULL" >> $GITHUB_OUTPUT
         echo "Latest device tree commit: $LATEST_COMMIT"
-        /tmp/send_msg.sh "🌲 Device tree: [${LATEST_COMMIT}](${{ env.DEVICE_TREE_URL }}/tree/$LATEST_COMMIT)"
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Set Swap Space
@@ -151,22 +155,8 @@ jobs:
       with:
         swap-size-gb: 30
 
-    - name: Show system resources
-      run: |
-        /tmp/send_msg.sh "📊 Checking runner resources..."
-        echo "CPU cores:"
-        nproc
-        echo
-        echo "Memory:"
-        free -h
-        echo
-        echo "Disk:"
-        df -h
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
     - name: Building recovery
       run: |
-        /tmp/send_msg.sh "⚙️ Starting build for \`${{ env.DEVICE_NAME }}\`..."
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ env.MANIFEST_BRANCH }}
 
         set +e
@@ -177,33 +167,12 @@ jobs:
         lunch ${{ env.MAKEFILE_NAME }}-bp2a-eng
 
         if ! mka adbd ${{ env.BUILD_TARGET }}image -j$(nproc --all); then
-          /tmp/send_msg.sh "❌ Build failed for \`${{ env.DEVICE_NAME }}\` (\`${{ env.MANIFEST_BRANCH }}\`)\n🔗 [View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
           exit 1
         fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    - name: Notify Build Failure
-      if: failure()
-      run: |
-        /tmp/send_msg.sh "❌ Build failed for \`${{ env.DEVICE_NAME }}\` (\`${{ env.MANIFEST_BRANCH }}\`)\n🔗 [View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
-        exit 1
-
-    - name: Show system resources post-build
-      run: |
-        /tmp/send_msg.sh "📊 Checking runner resources..."
-        echo "CPU cores:"
-        nproc
-        echo
-        echo "Memory:"
-        free -h
-        echo
-        echo "Disk:"
-        df -h
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
     - name: Check the output directory before uploading
       run: |
-        /tmp/send_msg.sh "🧾 Checking output directory..."
         ls ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ env.MANIFEST_BRANCH }}/out/target/product/${{ env.DEVICE_NAME }}/
 
     - name: Upload to Release
@@ -221,116 +190,3 @@ jobs:
           Device tree commit: [${{ steps.devtree_commit.outputs.LATEST_COMMIT }}](${{ env.DEVICE_TREE_URL }}/tree/${{ steps.devtree_commit.outputs.LATEST_COMMIT }})
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Notify Release
-      if: success()
-      run: |
-        RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ github.run_id }}"
-        DEVICE_TREE_BROWSE_URL="${{ env.DEVICE_TREE_URL }}/tree/${{ steps.devtree_commit.outputs.LATEST_COMMIT }}"
-        /tmp/send_msg.sh "📦 *Build complete!*\n🔗 [Download]($RELEASE_URL)\n🌲 Device tree commit: [${{ steps.devtree_commit.outputs.LATEST_COMMIT }}]($DEVICE_TREE_BROWSE_URL)"
-
-    - name: Watch for device tree changes and dirty build
-      if: success()
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        START_TIME=$(date +%s)
-        BUILD_COUNT=0
-        CURRENT_COMMIT="${{ steps.devtree_commit.outputs.LATEST_COMMIT_FULL }}"
-
-        WORKSPACE="${{ steps.pwd.outputs.workspace-folder }}"
-        FOX_DIR="$WORKSPACE/fox_${{ env.MANIFEST_BRANCH }}"
-        DEVICE_DIR="$FOX_DIR/${{ env.DEVICE_PATH }}"
-        OUT_DIR="$FOX_DIR/out/target/product/${{ env.DEVICE_NAME }}"
-
-        /tmp/send_msg.sh "👀 Watching for device tree changes until the watch window ends..."
-
-        while true; do
-          NOW=$(date +%s)
-          ELAPSED=$((NOW - START_TIME))
-
-          if [ "$ELAPSED" -ge "${{ env.WATCH_UNTIL_SECONDS }}" ]; then
-            /tmp/send_msg.sh "⏱️ Watch window ended. No more dirty builds will be attempted."
-            break
-          fi
-
-          sleep "${{ env.WATCH_INTERVAL_SECONDS }}"
-
-          NOW=$(date +%s)
-          ELAPSED=$((NOW - START_TIME))
-
-          if [ "$ELAPSED" -ge "${{ env.WATCH_UNTIL_SECONDS }}" ]; then
-            /tmp/send_msg.sh "⏱️ Watch window ended. No more dirty builds will be attempted."
-            break
-          fi
-
-          cd "$DEVICE_DIR"
-
-          git fetch origin "${{ env.DEVICE_TREE_BRANCH }}"
-
-          NEW_COMMIT=$(git rev-parse "origin/${{ env.DEVICE_TREE_BRANCH }}")
-          NEW_COMMIT_SHORT=$(echo "$NEW_COMMIT" | cut -c1-7)
-          CURRENT_COMMIT_SHORT=$(echo "$CURRENT_COMMIT" | cut -c1-7)
-
-          if [ "$NEW_COMMIT" = "$CURRENT_COMMIT" ]; then
-            echo "No device tree change detected. Current commit: $CURRENT_COMMIT_SHORT"
-            continue
-          fi
-
-          BUILD_COUNT=$((BUILD_COUNT + 1))
-
-          /tmp/send_msg.sh "🆕 Device tree change detected: \`${CURRENT_COMMIT_SHORT}\` → \`${NEW_COMMIT_SHORT}\`\n🔄 Updating device tree and testing repos, then starting dirty build #${BUILD_COUNT}..."
-
-          git reset --hard "$NEW_COMMIT"
-          CURRENT_COMMIT="$NEW_COMMIT"
-
-          cd "$FOX_DIR"
-
-          # Capture updates of the main testing repos cleanly
-          rm -rf bootable/recovery
-          rm -rf vendor/recovery
-
-          git clone --depth=1 -b fox_16.0-R12-wlan-test \
-            git@gitlab.com:OrangeFox/Testing/Recovery.git \
-            bootable/recovery
-
-          git clone --depth=1 -b fox_16.0-R12 \
-            git@gitlab.com:OrangeFox/vendor/recovery.git \
-            vendor/recovery
-
-          set +e
-          source build/envsetup.sh
-          export ALLOW_MISSING_DEPENDENCIES=true
-          set -e
-
-          lunch ${{ env.MAKEFILE_NAME }}-bp2a-eng
-
-          /tmp/send_msg.sh "🔨 Dirty build #${BUILD_COUNT} compilation started..."
-
-          if ! mka adbd ${{ env.BUILD_TARGET }}image -j$(nproc --all); then
-            /tmp/send_msg.sh "❌ Dirty build #${BUILD_COUNT} failed at commit \`${NEW_COMMIT_SHORT}\`. I will keep watching for another device tree change."
-            continue
-          fi
-
-          TAG_NAME="${{ github.run_id }}-${BUILD_COUNT}"
-          RELEASE_NAME="${{ env.DEVICE_NAME }}-${TAG_NAME}"
-
-          /tmp/send_msg.sh "📦 Uploading dirty build #${BUILD_COUNT}..."
-
-          gh release create "$TAG_NAME" \
-            "$OUT_DIR"/OrangeFox-R*.img \
-            "$OUT_DIR"/OrangeFox-R*.zip \
-            "$OUT_DIR"/OrangeFox-R*.md5 \
-            --repo "${{ github.repository }}" \
-            --title "$RELEASE_NAME" \
-            --notes "Manifest: ${{ env.MANIFEST_BRANCH }}
-          Device: ${{ env.DEVICE_NAME }}
-          Target: ${{ env.BUILD_TARGET }}
-          Dirty build: #${BUILD_COUNT}
-          Device tree commit: ${NEW_COMMIT_SHORT}
-          Device tree URL: ${{ env.DEVICE_TREE_URL }}/tree/${NEW_COMMIT_SHORT}"
-
-          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${TAG_NAME}"
-
-          /tmp/send_msg.sh "📦 *Dirty build #${BUILD_COUNT} complete!*\n🔗 [Download]($RELEASE_URL)\n🌲 Device tree commit: [${NEW_COMMIT_SHORT}](${{ env.DEVICE_TREE_URL }}/tree/${NEW_COMMIT_SHORT})"
-        done
