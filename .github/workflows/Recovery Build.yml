@@ -20,13 +20,36 @@ on:
         options:
           - fox_16.0
 
+      aosp_mirror:
+        description: "Select AOSP Mirror (to bypass Google HTTP 429 Rate Limits)"
+        required: true
+        type: choice
+        default: tuna
+        options:
+          - tuna
+          - ustc
+          - none
+
+      sync_sources:
+        description: "Sync OrangeFox/AOSP sources (uncheck to skip sync and use existing workspace)"
+        required: true
+        type: boolean
+        default: true
+
 jobs:
   build:
     if: github.event.repository.owner.id == github.event.sender.id
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     timeout-minutes: 360
     permissions:
       contents: write
+    container:
+      image: ubuntu:24.04
+      options: --privileged
+
+    defaults:
+      run:
+        shell: bash
 
     env:
       SYNC_URL: https://github.com/OrangeFox16/sync.git
@@ -77,7 +100,7 @@ jobs:
     - name: Initialize workspace
       run: |
         /tmp/send_msg.sh "🚀 *Starting OrangeFox build* for \`${{ env.DEVICE_NAME }}\` (\`${{ env.MANIFEST_BRANCH }}\`)\n🔗 [View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
-        mkdir workspace
+        mkdir -p workspace
         cd workspace
         echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
       id: pwd
@@ -85,9 +108,11 @@ jobs:
     - name: Prepare the build environment
       run: |
         /tmp/send_msg.sh "🧩 Preparing build environment..."
-        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
-            linux-modules-extra-$(uname -r) \
-            git python3 tar aria2
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            sudo curl git python3 tar aria2 rsync lsb-release
+        DEBIAN_FRONTEND=noninteractive apt-get install -yq \
+            linux-modules-extra-$(uname -r) || true
         curl -L -O "https://gitlab.com/OrangeFox/misc/scripts/-/raw/master/setup/android_build_env.sh"
         sudo bash android_build_env.sh
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
@@ -98,16 +123,43 @@ jobs:
         distribution: 'zulu'
         java-version: '11'
 
+    - name: Configure AOSP Mirror
+      if: ${{ inputs.sync_sources }}
+      run: |
+        if [ "${{ inputs.aosp_mirror }}" = "tuna" ]; then
+          git config --global url."https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/".insteadOf "https://android.googlesource.com/"
+          echo "Configured Tsinghua TUNA Mirror for AOSP"
+        elif [ "${{ inputs.aosp_mirror }}" = "ustc" ]; then
+          git config --global url."https://mirrors.ustc.edu.cn/aosp/".insteadOf "https://android.googlesource.com/"
+          echo "Configured USTC Mirror for AOSP"
+        else
+          echo "Using default Google AOSP servers"
+        fi
+
     - name: Sync OrangeFox sources and minimal manifest
+      if: ${{ inputs.sync_sources }}
       run: |
         /tmp/send_msg.sh "🌐 Syncing OrangeFox sources..."
         cd ${{ steps.pwd.outputs.workspace-folder }}
+        # Reset AOSP repos to clean state if they exist
+        if [ -d "fox_${{ env.MANIFEST_BRANCH }}/.repo" ]; then
+          cd "fox_${{ env.MANIFEST_BRANCH }}"
+          repo forall -c "git reset --hard HEAD && git clean -fd"
+          cd ..
+        fi
+        # Clean up directories replaced by custom git clones to prevent "unsupported checkout state" errors
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/bootable/recovery"
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/external/se_omapi"
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/device/qcom/common"
+        rm -rf "fox_${{ env.MANIFEST_BRANCH }}/device/qcom/twrp-common"
+        rm -rf sync
         git clone --depth=1 ${{ env.SYNC_URL }}
         cd sync
         ./orangefox_sync.sh --branch ${{ env.MANIFEST_BRANCH }} --path ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ env.MANIFEST_BRANCH }}
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Replace bootable/recovery with Testing/Recovery
+      if: ${{ inputs.sync_sources }}
       run: |
         /tmp/send_msg.sh "🔁 Replacing bootable/recovery..."
 
@@ -131,6 +183,7 @@ jobs:
       run: |
         /tmp/send_msg.sh "🌲 Cloning device tree for \`${{ env.DEVICE_NAME }}\`..."
         cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ env.MANIFEST_BRANCH }}
+        rm -rf ./${{ env.DEVICE_PATH }}
         git clone --depth=1 ${{ env.DEVICE_TREE_URL }} -b ${{ env.DEVICE_TREE_BRANCH }} ./${{ env.DEVICE_PATH }}
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
